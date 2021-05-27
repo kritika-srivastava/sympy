@@ -14,7 +14,7 @@ from sympy.core.sympify import _sympify
 from ..constructor import construct_domain
 
 from .exceptions import (NonSquareMatrixError, ShapeError, DDMShapeError,
-        DDMDomainError, DDMFormatError)
+        DDMDomainError, DDMFormatError, DDMBadInputError)
 
 from .ddm import DDM
 
@@ -23,7 +23,6 @@ from .sdm import SDM
 from .domainscalar import DomainScalar
 
 from sympy.polys.domains import ZZ
-
 
 class DomainMatrix:
     r"""
@@ -53,7 +52,7 @@ class DomainMatrix:
     ...    [3, 4]])
     >>> A = DomainMatrix.from_Matrix(Matrix1)
     >>> A
-    DomainMatrix([[1, 2], [3, 4]], (2, 2), ZZ)
+    DomainMatrix({0: {0: 1, 1: 2}, 1: {0: 3, 1: 4}}, (2, 2), ZZ)
 
     Driectly forming a DomainMatrix:
 
@@ -112,6 +111,25 @@ class DomainMatrix:
                 raise ValueError("fmt should be 'sparse' or 'dense'")
 
         return cls.from_rep(rep)
+
+    def __getitem__(self, key):
+        i, j = key
+        m, n = self.shape
+        if not (isinstance(i, slice) or isinstance(j, slice)):
+            return DomainScalar(self.rep.getitem(i, j), self.domain)
+
+        if not isinstance(i, slice):
+            if not -m <= i < m:
+                raise IndexError("Row index out of range")
+            i = i % m
+            i = slice(i, i+1)
+        if not isinstance(j, slice):
+            if not -n <= j < n:
+                raise IndexError("Column index out of range")
+            j = j % n
+            j = slice(j, j+1)
+
+        return self.from_rep(self.rep.extract_slice(i, j))
 
     @classmethod
     def from_rep(cls, rep):
@@ -192,14 +210,15 @@ class DomainMatrix:
         ========
 
         >>> from sympy.polys.matrices import DomainMatrix
-        >>> A = DomainMatrix.from_list_sympy(1, 2, [[1, 0]])
+        >>> from sympy.abc import x, y, z
+        >>> A = DomainMatrix.from_list_sympy(1, 3, [[x, y, z]])
         >>> A
-        DomainMatrix([[1, 0]], (1, 2), ZZ)
+        DomainMatrix([[x, y, z]], (1, 3), ZZ[x,y,z])
 
         See Also
         ========
 
-        sympy.polys.constructor.construct_domain
+        sympy.polys.constructor.construct_domain, from_dict_sympy
 
         """
         assert len(rows) == nrows
@@ -214,7 +233,57 @@ class DomainMatrix:
         return DomainMatrix(domain_rows, (nrows, ncols), domain)
 
     @classmethod
-    def from_Matrix(cls, M, **kwargs):
+    def from_dict_sympy(cls, nrows, ncols, elemsdict, **kwargs):
+        """
+
+        Parameters
+        ==========
+
+        nrows: number of rows
+        ncols: number of cols
+        elemsdict: dict of dicts containing non-zero elements of the DomainMatrix
+
+        Returns
+        =======
+
+        DomainMatrix containing elements of elemsdict
+
+        Examples
+        ========
+
+        >>> from sympy.polys.matrices import DomainMatrix
+        >>> from sympy.abc import x,y,z
+        >>> elemsdict = {0: {0:x}, 1:{1: y}, 2: {2: z}}
+        >>> A = DomainMatrix.from_dict_sympy(3, 3, elemsdict)
+        >>> A
+        DomainMatrix({0: {0: x}, 1: {1: y}, 2: {2: z}}, (3, 3), ZZ[x,y,z])
+
+        See Also
+        ========
+
+        from_list_sympy
+
+        """
+        if not all(0 <= r < nrows for r in elemsdict):
+            raise DDMBadInputError("Row out of range")
+        if not all(0 <= c < ncols for row in elemsdict.values() for c in row):
+            raise DDMBadInputError("Column out of range")
+
+        items_sympy = [_sympify(item) for row in elemsdict.values() for item in row.values()]
+        domain, items_domain = cls.get_domain(items_sympy, **kwargs)
+
+        idx = 0
+        items_dict = {}
+        for i, row in elemsdict.items():
+                items_dict[i] = {}
+                for j in row:
+                    items_dict[i][j] = items_domain[idx]
+                    idx += 1
+
+        return DomainMatrix(items_dict, (nrows, ncols), domain)
+
+    @classmethod
+    def from_Matrix(cls, M, fmt='sparse',**kwargs):
         r"""
         Convert Matrix to DomainMatrix
 
@@ -238,7 +307,14 @@ class DomainMatrix:
         ...    [2.4, 1]])
         >>> A = DomainMatrix.from_Matrix(M)
         >>> A
-        DomainMatrix([[1.0, 3.4], [2.4, 1.0]], (2, 2), RR)
+        DomainMatrix({0: {0: 1.0, 1: 3.4}, 1: {0: 2.4, 1: 1.0}}, (2, 2), RR)
+
+        We can keep internal representation as ddm using fmt='dense'
+        >>> from sympy import Matrix, QQ
+        >>> from sympy.polys.matrices import DomainMatrix
+        >>> A = DomainMatrix.from_Matrix(Matrix([[QQ(1, 2), QQ(3, 4)], [QQ(0, 1), QQ(0, 1)]]), fmt='dense')
+        >>> A.rep
+        [[1/2, 3/4], [0, 0]]
 
         See Also
         ========
@@ -246,7 +322,10 @@ class DomainMatrix:
         Matrix
 
         """
-        return cls.from_list_sympy(*M.shape, M.tolist(), **kwargs)
+        if fmt == 'dense':
+            return cls.from_list_sympy(*M.shape, M.tolist(), **kwargs)
+
+        return cls.from_dict_sympy(*M.shape, M.todod(), **kwargs)
 
     @classmethod
     def get_domain(cls, items_sympy, **kwargs):
@@ -471,11 +550,23 @@ class DomainMatrix:
         """
         from sympy.matrices.dense import MutableDenseMatrix
         elemlist = self.rep.to_list()
-        rows_sympy = [[self.domain.to_sympy(e) for e in row] for row in elemlist]
-        return MutableDenseMatrix(rows_sympy)
+        elements_sympy = [self.domain.to_sympy(e) for row in elemlist for e in row]
+        return MutableDenseMatrix(*self.shape, elements_sympy)
 
     def __repr__(self):
         return 'DomainMatrix(%s, %r, %r)' % (str(self.rep), self.shape, self.domain)
+
+    def transpose(self):
+        """Matrix transpose of ``self``"""
+        return self.from_rep(self.rep.transpose())
+
+    def flat(self):
+        rows, cols = self.shape
+        return [self[i,j].element for i in range(rows) for j in range(cols)]
+
+    @property
+    def is_zero_matrix(self):
+        return all(self[i, j].element == self.domain.zero for i in range(self.shape[0]) for j in range(self.shape[1]))
 
     def hstack(A, B):
         r"""
@@ -511,6 +602,15 @@ class DomainMatrix:
         """
         A, B = A.unify(B, fmt='dense')
         return A.from_rep(A.rep.hstack(B.rep))
+
+    def vstack(A, B):
+        A, B = A.unify(B, fmt='dense')
+        return A.from_rep(A.rep.vstack(B.rep))
+
+    def applyfunc(self, func, domain=None):
+        if domain is None:
+            domain = self.domain
+        return self.from_rep(self.rep.applyfunc(func, domain))
 
     def __add__(A, B):
         if not isinstance(B, DomainMatrix):
@@ -926,6 +1026,8 @@ class DomainMatrix:
         DomainMatrix([[1, 1]], (1, 2), QQ)
 
         """
+        if not self.domain.is_Field:
+            raise ValueError('Not a field')
         return self.from_rep(self.rep.nullspace()[0])
 
     def inv(self):
@@ -1098,6 +1200,20 @@ class DomainMatrix:
         sol = self.rep.lu_solve(rhs.rep)
         return self.from_rep(sol)
 
+    def _solve(A, b):
+        # XXX: Not sure about this method or its signature. It is just created
+        # because it is needed by the holonomic module.
+        if A.shape[0] != b.shape[0]:
+            raise ShapeError("Shape")
+        if A.domain != b.domain or not A.domain.is_Field:
+            raise ValueError('Not a field')
+        Aaug = A.hstack(b)
+        Arref, pivots = Aaug.rref()
+        particular = Arref.from_rep(Arref.rep.particular())
+        nullspace_rep, nonpivots = Arref[:,:-1].rep.nullspace()
+        nullspace = Arref.from_rep(nullspace_rep)
+        return particular, nullspace
+
     def charpoly(self):
         r"""
         Returns the coefficients of the characteristic polynomial
@@ -1149,6 +1265,25 @@ class DomainMatrix:
 
         """
         return cls.from_rep(SDM.eye(n, domain))
+
+    @classmethod
+    def diag(cls, diagonal, domain, shape=None):
+        r"""
+        Return diagonal matrix with entries from ``diagonal``.
+
+        Examples
+        ========
+
+        >>> from sympy.polys.matrices import DomainMatrix
+        >>> from sympy import ZZ
+        >>> DomainMatrix.diag([ZZ(5), ZZ(6)], ZZ)
+        DomainMatrix({0: {0: 5}, 1: {1: 6}}, (2, 2), ZZ)
+
+        """
+        if shape is None:
+            N = len(diagonal)
+            shape = (N, N)
+        return cls.from_rep(SDM.diag(diagonal, domain, shape))
 
     @classmethod
     def zeros(cls, shape, domain, *, fmt='sparse'):
@@ -1219,6 +1354,6 @@ class DomainMatrix:
         False
 
         """
-        if not isinstance(B, DomainMatrix):
+        if not isinstance(A, type(B)):
             return NotImplemented
-        return A.rep == B.rep
+        return A.domain == B.domain and A.rep == B.rep

@@ -3,6 +3,7 @@
 from sympy import I, S, sqrt, sin, oo, Poly, Float, Integer, Rational, pi
 from sympy.abc import x, y, z
 
+from sympy.utilities.iterables import cartes
 from sympy.core.compatibility import HAS_GMPY
 
 from sympy.polys.domains import (ZZ, QQ, RR, CC, FF, GF, EX, ZZ_gmpy,
@@ -582,8 +583,14 @@ def test_Domain_convert():
         check_element(K3.convert_from(K2.zero, K2), K3.zero, K1, K2, K3)
 
     def composite_domains(K):
-        return [K, K[y], K[z], K[y, z],
-                   K.frac_field(y), K.frac_field(z), K.frac_field(y, z)]
+        domains = [
+            K,
+            K[y], K[z], K[y, z],
+            K.frac_field(y), K.frac_field(z), K.frac_field(y, z),
+            # XXX: These should be tested and made to work...
+            # K.old_poly_ring(y), K.old_frac_field(y),
+        ]
+        return domains
 
     QQ2 = QQ.algebraic_field(sqrt(2))
     QQ3 = QQ.algebraic_field(sqrt(3))
@@ -597,12 +604,22 @@ def test_Domain_convert():
 
     assert QQ.convert(10e-52) == QQ(1684996666696915, 1684996666696914987166688442938726917102321526408785780068975640576)
 
-    R, x = ring("x", ZZ)
-    assert ZZ.convert(x - x) == 0
-    assert ZZ.convert(x - x, R.to_domain()) == 0
+    R, xr = ring("x", ZZ)
+    assert ZZ.convert(xr - xr) == 0
+    assert ZZ.convert(xr - xr, R.to_domain()) == 0
 
     assert CC.convert(ZZ_I(1, 2)) == CC(1, 2)
     assert CC.convert(QQ_I(1, 2)) == CC(1, 2)
+
+    K1 = QQ.frac_field(x)
+    K2 = ZZ.frac_field(x)
+    K3 = QQ[x]
+    K4 = ZZ[x]
+    Ks = [K1, K2, K3, K4]
+    for Ka, Kb in cartes(Ks, Ks):
+        assert Ka.convert_from(Kb.from_sympy(x), Kb) == Ka.from_sympy(x)
+
+    assert K2.convert_from(QQ(1, 2), QQ) == K2(QQ(1, 2))
 
 
 def test_GlobalPolynomialRing_convert():
