@@ -105,6 +105,13 @@ class DDM(list):
         cols = len(ddm[0]) if ddm else len(range(self.shape[1])[slice2])
         return DDM(ddm, (rows, cols), self.domain)
 
+    def extract(self, rows, cols):
+        ddm = []
+        for i in rows:
+            rowi = self[i]
+            ddm.append([rowi[j] for j in cols])
+        return DDM(ddm, (len(rows), len(cols)), self.domain)
+
     def to_list(self):
         return list(self)
 
@@ -284,7 +291,9 @@ class DDM(list):
     def rref(a):
         """Reduced-row echelon form of a and list of pivots"""
         b = a.copy()
-        pivots = ddm_irref(b)
+        K = a.domain
+        partial_pivot = K.is_RealField or K.is_ComplexField
+        pivots = ddm_irref(b, _partial_pivot=partial_pivot)
         return b, pivots
 
     def nullspace(a):
